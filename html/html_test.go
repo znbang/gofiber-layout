@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -128,50 +129,75 @@ func Test_Layout_Multi(t *testing.T) {
 
 
 func Test_FileSystem(t *testing.T) {
-	engine := NewFileSystem(http.Dir("./views"), ".html")
+	// Step 1: Set up filesystem
+	fsys := os.DirFS("./views")       // fs.FS
+	httpFS := http.FS(fsys)           // http.FileSystem
+
+	// Step 2: Create engine
+	engine := NewFileSystem(httpFS, fsys, ".html")
+
+	// Step 3: Set layout
 	engine.Layout("layouts/main")
+
+	// Step 4: Add function
 	engine.AddFunc("isAdmin", func(user string) bool {
 		return user == "admin"
 	})
+
+	// Step 5: Load templates
 	if err := engine.Load(); err != nil {
 		t.Fatalf("load: %v\n", err)
 	}
 
+	// Step 6: Render
 	var buf bytes.Buffer
 	engine.Render(&buf, "index", map[string]interface{}{
 		"Title": "Hello, World!",
-	}, )
+	})
+
 	expect := `<!DOCTYPE html><html><head><title>Main</title></head><body><h2>Header</h2><h1>Hello, World!</h1><h2>Footer</h2></body></html>`
 	result := trim(buf.String())
+
 	if expect != result {
 		t.Fatalf("Expected:\n%s\nResult:\n%s\n", expect, result)
 	}
 }
 
+
+
 func Test_Reload(t *testing.T) {
-	engine := NewFileSystem(http.Dir("./views"), ".html")
-	engine.Reload(true) // Optional. Default: false
+	// Define both file systems based on disk
+	httpFS := http.Dir("./views")
+	rawFS := os.DirFS("./views")
+
+	// Now pass both along with extension
+	engine := NewFileSystem(httpFS, rawFS, ".html")
+	engine.Reload(true) // Enable reloading for test
 
 	engine.AddFunc("isAdmin", func(user string) bool {
 		return user == "admin"
 	})
+
 	if err := engine.Load(); err != nil {
 		t.Fatalf("load: %v\n", err)
 	}
 
+	// Write "after reload" to the file
 	if err := ioutil.WriteFile("./views/reload.html", []byte("after reload\n"), 0644); err != nil {
 		t.Fatalf("write file: %v\n", err)
 	}
 	defer func() {
+		// Restore file content after test
 		if err := ioutil.WriteFile("./views/reload.html", []byte("before reload\n"), 0644); err != nil {
-			t.Fatalf("write file: %v\n", err)
+			t.Fatalf("restore file: %v\n", err)
 		}
 	}()
 
-	engine.Load()
+	engine.Load() // Reload templates again
 
 	var buf bytes.Buffer
 	engine.Render(&buf, "reload", nil)
+
 	expect := "after reload"
 	result := trim(buf.String())
 	if expect != result {
