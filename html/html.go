@@ -4,14 +4,13 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"sync"
-
-	"github.com/gofiber/template/utils"
 )
 
 // Engine struct
@@ -111,6 +110,40 @@ func (e *Engine) Parse() error {
 	return e.Load()
 }
 
+// ReadFile function to replace the deprecated utils.ReadFile() call
+func readFile(path string, fsys http.FileSystem) ([]byte, error) {
+	if fsys != nil {
+		f, err := fsys.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		return io.ReadAll(f)
+	}
+	return os.ReadFile(path)
+}
+
+// walkFS replaces utils.Walk for embedded or OS files
+func walkFS(fsys http.FileSystem, root string, walkFn func(path string, info os.FileInfo, err error) error) error {
+	if fsys != nil {
+		fsysFS, ok := fsys.(fs.FS)
+		if !ok {
+			return fmt.Errorf("walkFS: filesystem does not implement fs.FS")
+		}
+		return fs.WalkDir(fsysFS, root, func(entryPath string, d fs.DirEntry, err error) error {
+			info, statErr := d.Info()
+			if statErr != nil {
+				return walkFn(entryPath, nil, statErr)
+			}
+			return walkFn(entryPath, info, err)
+		})
+	}
+	return filepath.Walk(root, walkFn)
+}
+
+
+
+
 // Load parses the templates to the engine.
 func (e *Engine) Load() error {
 	if e.loaded {
@@ -121,14 +154,16 @@ func (e *Engine) Load() error {
 	defer e.mutex.Unlock()
 	e.Templates = make(map[string]*template.Template)
 
-	// Load layout
-	var layoutBuf []byte = nil
+	// Load layout using ReadFile function
+	var layoutBuf []byte
 	if e.layout != "" {
 		var err error
-		if layoutBuf, err = utils.ReadFile(path.Join(e.directory, e.layout+e.extension), e.fileSystem); err != nil {
+		layoutPath := path.Join(e.directory, e.layout+e.extension)
+		if layoutBuf, err = readFile(layoutPath, e.fileSystem); err != nil {
 			return err
 		}
-	}
+}
+
 
 	walkFn := func(path string, info os.FileInfo, err error) error {
 		// Return error if exist
@@ -163,7 +198,9 @@ func (e *Engine) Load() error {
 		// name = strings.Replace(name, e.extension, "", -1)
 		// Read the file
 		// #gosec G304
-		buf, err := utils.ReadFile(path, e.fileSystem)
+		//
+		//buf, err := utils.ReadFile(path, e.fileSystem) This is deprecated in the latest version of gofiber
+		buf, err := readFile(path, e.fileSystem)
 		if err != nil {
 			return err
 		}
@@ -200,7 +237,8 @@ func (e *Engine) Load() error {
 	// notify engine that we parsed all templates
 	e.loaded = true
 	if e.fileSystem != nil {
-		return utils.Walk(e.fileSystem, e.directory, walkFn)
+		//return utils.Walk(e.fileSystem, e.directory, walkFn) utils.Walk is deprecated in the latest version of gofiber
+		return walkFS(e.fileSystem, e.directory, walkFn)
 	}
 	return filepath.Walk(e.directory, walkFn)
 }
